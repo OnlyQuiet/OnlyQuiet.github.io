@@ -4,6 +4,31 @@
   
     
     <entry>
+      <title>【工作小札】关于@Transactional错误使用的一次记录</title>
+      <link href="2021/08/29/%E3%80%90%E5%B7%A5%E4%BD%9C%E5%B0%8F%E6%9C%AD%E3%80%91%E5%85%B3%E4%BA%8E@Transactional%E9%94%99%E8%AF%AF%E4%BD%BF%E7%94%A8%E7%9A%84%E4%B8%80%E6%AC%A1%E8%AE%B0%E5%BD%95/"/>
+      <url>2021/08/29/%E3%80%90%E5%B7%A5%E4%BD%9C%E5%B0%8F%E6%9C%AD%E3%80%91%E5%85%B3%E4%BA%8E@Transactional%E9%94%99%E8%AF%AF%E4%BD%BF%E7%94%A8%E7%9A%84%E4%B8%80%E6%AC%A1%E8%AE%B0%E5%BD%95/</url>
+      
+        <content type="html"><![CDATA[<link rel="stylesheet" class="aplayer-secondary-style-marker" href="\assets\css\APlayer.min.css"><script src="\assets\js\APlayer.min.js" class="aplayer-secondary-script-marker"></script><p>最近小七接到一个任务，大体上是为一个第三方服务增加一个重试和兜底方案。因为只是一个单纯的http调用，小七第一时间就想到了spring的retry框架，结果用上@retry后，非但没有重试，反而报数据库表被锁的异常。查看了以前的代码，发现正常流程下，代码是ok的，但是异常流程直接GG，遂做以下记录。</p><p>伪代码如下：</p><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">@Transactional</span></span><br><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">mytest</span><span class="params">()</span> <span class="keyword">throws</span> InterruptedException </span>&#123;</span><br><span class="line">    System.out.println(<span class="string">&quot;开始执行主线程逻辑...&quot;</span>);</span><br><span class="line">    User user = <span class="keyword">new</span> User();</span><br><span class="line">    user.setName(<span class="string">&quot;测试&quot;</span>);</span><br><span class="line">    user.setPassword(<span class="string">&quot;1222&quot;</span>);</span><br><span class="line">    <span class="keyword">super</span>.save(user);</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 错误一：另起线程相当于，另外开启了一个事务，一旦发生异常不会回滚主线程的事务</span></span><br><span class="line">    ThreadPoolUtil.execute(()-&gt;&#123;</span><br><span class="line">        <span class="comment">// 错误二：这里发生了非代理对象的调用，会造成aop失效，进而造成事务失效</span></span><br><span class="line">        <span class="comment">// 错误三：该方法中再次对user表进行了操作（不同事务操作同一张表，极易造成锁表）</span></span><br><span class="line">        <span class="keyword">this</span>.mytest1(user);</span><br><span class="line">    &#125;);</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 模拟主线程剩下的操作（请求三方接口，http连接保持一分钟）</span></span><br><span class="line">    <span class="comment">// 错误四：结合错误三来看，主线程长时间不提交事务，子线程也不能提交事务，最后会造成数据库被锁</span></span><br><span class="line">    Thread.sleep(<span class="number">60000</span>);</span><br><span class="line">    System.out.println(<span class="string">&quot;主线程逻辑执行完毕...&quot;</span>);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// 错误五：私有方法上添加@Transactional无效</span></span><br><span class="line"><span class="meta">@Override</span></span><br><span class="line"><span class="meta">@Transactional</span></span><br><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">void</span> <span class="title">mytest1</span><span class="params">(User user)</span></span>&#123;</span><br><span class="line">    <span class="comment">// 一系列操作复杂逻辑操作</span></span><br><span class="line">    System.out.println(<span class="string">&quot;开始执行子线程逻辑...&quot;</span>);</span><br><span class="line">    user.setName(<span class="string">&quot;测试2&quot;</span>);</span><br><span class="line">    <span class="keyword">super</span>.updateById(user);</span><br><span class="line">    <span class="keyword">if</span> (<span class="number">1</span>==<span class="number">1</span>)&#123;</span><br><span class="line">        <span class="keyword">throw</span> <span class="keyword">new</span> RuntimeException(<span class="string">&quot;更新操作出错&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    System.out.println(<span class="string">&quot;开始执行子线程执行完成...&quot;</span>);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure><p>总结：写代码不仅要考虑正向流程，更要考虑异常的情况。单元测试也是如此。</p>]]></content>
+      
+      
+      <categories>
+          
+          <category> 工作小札 </category>
+          
+      </categories>
+      
+      
+        <tags>
+            
+            <tag> Spring </tag>
+            
+        </tags>
+      
+    </entry>
+    
+    
+    
+    <entry>
       <title>【略懂略懂】单元测试入门笔记</title>
       <link href="2021/08/18/%E3%80%90%E7%95%A5%E6%87%82%E7%95%A5%E6%87%82%E3%80%91%E5%8D%95%E5%85%83%E6%B5%8B%E8%AF%95%E5%85%A5%E9%97%A8/"/>
       <url>2021/08/18/%E3%80%90%E7%95%A5%E6%87%82%E7%95%A5%E6%87%82%E3%80%91%E5%8D%95%E5%85%83%E6%B5%8B%E8%AF%95%E5%85%A5%E9%97%A8/</url>
